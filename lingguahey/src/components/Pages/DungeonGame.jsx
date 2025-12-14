@@ -1,0 +1,1323 @@
+import React, { useState, useEffect, useContext } from 'react';
+import { motion } from "framer-motion";
+
+import axios from 'axios'; // Import Axios for TTS
+import {
+  Box,
+  Typography,
+  Button,
+  Grid,
+  Stack
+} from '@mui/material';
+import { mockQuestions } from './mockQuestions';
+import { getUserFromToken } from '../../utils/auth';
+import API from '../../api';
+import { MusicContext } from '../../contexts/MusicContext';
+import { useLocation, useNavigate } from 'react-router-dom';
+
+// Background image for the game area
+import DungeonRoom from '../../assets/images/backgrounds/DungeonRoom.png';
+import DungeonRoomAnimation from '../../assets/images/backgrounds/DungeonRoomAnimation.gif';
+import DungeonBar from '../../assets/images/backgrounds/DungeonBar.png';
+import DungeonHint from '../../assets/images/backgrounds/DungeonHint.png';
+import GameTextBoxMediumLong from '../../assets/images/ui-assets/GameTextBoxMediumLong.png'
+import DungeonBarv2 from '../../assets/images/backgrounds/DungeonBarv2.png';
+import NameTabvar2 from "../../assets/images/backgrounds/NameTabvar2.png";
+
+import GameTextField from "../../assets/images/backgrounds/GameTextField.png";
+import GameTextBox from "../../assets/images/backgrounds/GameTextBox.png";
+import GameShopBoxSmall from "../../assets/images/backgrounds/GameShopBoxSmall.png";
+import GameShopBoxSmallRed from "../../assets/images/backgrounds/GameShopBoxSmallRed.png";
+import NameTab from "../../assets/images/backgrounds/NameTab.png";
+import ItemBox from "../../assets/images/backgrounds/Itembox.png";
+import HealthPotion from "../../assets/images/objects/HealthPotion.png";
+import ShieldPotion from "../../assets/images/objects/ShieldPotion.png";
+import SkipPotion from "../../assets/images/objects/SkipPotion.png";
+import MCHeadshot from "../../assets/images/objects/MCHeadshot.png";
+import HeartFilled from "../../assets/images/objects/HeartFilled.png";
+import HeartNotFilled from "../../assets/images/objects/HeartNotFilled.png";
+import HeartShield from "../../assets/images/objects/HeartShield.png";
+import CastButton from '../../assets/images/ui-assets/CastButton.png';
+import MCNoWeaponArm from '../../assets/images/characters/MCNoWeaponArm.png';
+import MCNoWeaponAnimated from '../../assets/images/characters/MCNoWeaponAnimated.png';
+import Laser from '../../assets/images/effects/Laser.png';
+import GoldCoins from "../../assets/images/objects/GoldCoins.png";
+import Gems from "../../assets/images/objects/Gems.png";
+import PixieFly from '../../assets/images/characters/PixieFly.png';
+import BGM_DungeonBattle from "../../assets/music/BGM_DungeonBattle.wav";
+
+
+import BossAura from "../../assets/images/effects/BossAura.gif";
+import LaserFail from "../../assets/images/effects/LaserFail.gif";
+import LaserSuccess from "../../assets/images/effects/LaserSuccess.gif";
+import Shield from "../../assets/images/effects/Shield.png";
+import ShieldEnemy from "../../assets/images/effects/ShieldEnemy.png";
+import MCNoWeaponHit from '../../assets/images/characters/MCNoWeaponHit.png';
+
+
+export default function DungeonGame() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [levelData, setLevelData] = useState({});
+  const [selectedTiles, setSelectedTiles] = useState([]);
+  const [currentMonster, setCurrentMonster] = useState({});
+  const [hp, setHp] = useState();
+  const [userDetails, setUserDetails] = useState({});
+  const [roundCounter, setRoundCounter] = useState();
+  const [makeMessageAppear, setMakeMessageAppear] = useState(false);
+  const [messageDetails, setMessageDetails] = useState({});
+  const [itemEquipped, setItemEquipped] = useState({});
+  const [enemyAttacking, setEnemyAttacking] = useState(false);
+  const [impactVisible, setImpactVisible] = useState(false);
+  const [potions, setPotions] = useState([]);
+  const [mistakeCounter, setMistakeCounter] = useState(0);
+  // displayedMistakeCounter controls when the hint updates (only after the round finishes)
+  const [displayedMistakeCounter, setDisplayedMistakeCounter] = useState(0);
+  
+  // --- NEW STATE FOR TTS CONTROL ---
+  const [initialHintSpoken, setInitialHintSpoken] = useState(false); 
+  // ---------------------------------
+  
+  // --- Potion State ---
+  const [potionUsedThisRound, setPotionUsedThisRound] = useState(false);
+  const [skipPotionUsed, setSkipPotionUsed] = useState(false);
+  // --------------------
+
+  // --- TTS API Client Setup ---
+  const token = localStorage.getItem('token');
+  const APItts = axios.create({
+    baseURL: `${import.meta.env.VITE_API_BASE_URL}/api/lingguahey/tts`,
+    timeout: 5000,
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/octet-stream',
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  // --- TTS Synthesis Function ---
+  const synthesizeSpeech = async (text) => {
+    try {
+      const response = await APItts.post('/synthesize', { text }, { responseType: 'blob' });
+      const url = URL.createObjectURL(response.data);
+      new Audio(url).play();
+    } catch (error) {
+      console.error('Failed to synthesize speech', error);
+    }
+  };
+
+
+  // helper: reveal tagalog name progressively based on mistakes
+  function getPartialTagalogName() {
+    const name = currentMonster?.tagalogName || '';
+    // Use displayedMistakeCounter so the hint only changes after a round finishes
+    if (!name || displayedMistakeCounter <= 0) return { revealed: null, fully: false };
+
+    const parts = 3; // divide the string into 3 reveal segments
+    const progress = Math.min(displayedMistakeCounter, 4); // cap at 4 mistakes
+    const revealSegments = Math.min(progress, parts); // 1->1/3, 2->2/3, 3/->full
+    const revealLen = Math.ceil((name.length / parts) * revealSegments);
+
+    const revealed = name.slice(0, revealLen);
+    const fully = revealLen >= name.length;
+    return { revealed, fully, fullName: name };
+  }
+
+  // --- MODIFIED EFFECT FOR TRIGGERING TTS DIALOGUE ---
+  useEffect(() => {
+    // 1. Guard against running if no monster is loaded
+    if (!currentMonster.englishName) return; 
+    
+    // 2. Determine hint text
+    let hintText = '';
+    const { revealed, fully, fullName } = getPartialTagalogName();
+
+    if (displayedMistakeCounter === 0) {
+      // Logic for initial hint
+      // Prevent running if the initial hint has already been spoken for this monster
+      if (initialHintSpoken) return; 
+      
+      hintText = `I think that's ${currentMonster.description} ...`;
+      
+    } else {
+      // Logic for subsequent (mistake) hints
+      // If we reach a mistake, ensure the initial flag is set to true 
+      // so we don't accidentally play the initial message later.
+      setInitialHintSpoken(true); 
+      if (fully) {
+        hintText = `Oh I remember now! that's ${fullName}.`;
+      } else {
+        const hiddenPartLength = fullName.length - revealed.length;
+        const obscuredName = revealed + ' '.repeat(hiddenPartLength > 0 ? hiddenPartLength : 0);
+        hintText = `I think that monster's name is ${obscuredName}...`;
+      }
+    }
+
+    // 3. Play TTS and set flag for initial message
+    if (hintText) {
+      synthesizeSpeech(hintText);
+      if (displayedMistakeCounter === 0) {
+        setInitialHintSpoken(true); // Set flag immediately after speaking initial hint
+      }
+    }
+
+  // The TTS is triggered every time the displayed hint counter changes, 
+  // or the current monster's identifying properties change.
+  }, [displayedMistakeCounter, currentMonster.englishName, currentMonster.description]);
+// ---------------------------------------------
+
+
+  useEffect(() => {
+    // 1. Get the current hint string (e.g., "AHA" from "AHAS")
+    const { revealed } = getPartialTagalogName();
+
+    // 2. Ensure we have a revealed string and a monster with letters
+    if (!revealed || !currentMonster.jumbledLetters) return;
+
+    const availableLetters = currentMonster.jumbledLetters.map(l => l.toUpperCase());
+    const newSelectedTiles = [];
+    const usedIndices = new Set();
+
+    // 3. Loop through every character in the revealed hint
+    for (const rawChar of revealed) {
+      const char = rawChar.toUpperCase();
+      // skip whitespace / non-printable
+      if (!char || char.trim() === '') continue;
+
+      // Find the index of this character in the available jumbled letters
+      // Ensure we don't pick the same tile index twice using !usedIndices.has(idx)
+      const foundIndex = availableLetters.findIndex((l, idx) =>
+        l === char && !usedIndices.has(idx)
+      );
+
+      if (foundIndex !== -1) {
+        usedIndices.add(foundIndex);
+        // mark as preselected so we can style it with a glow
+        newSelectedTiles.push({ label: char, index: foundIndex, preselected: true });
+      }
+    }
+
+    // 4. Update the selected tiles state to reflect the hint
+    setSelectedTiles(newSelectedTiles);
+  }, [displayedMistakeCounter, currentMonster]);
+
+
+
+  const getMonster = async () => {
+    try {
+      // --- FIX: Reset TTS flag before fetching new monster ---
+      setInitialHintSpoken(false); 
+      // ------------------------------------------------------
+      const response = await API.get(`/game/current-monster`);
+      setCurrentMonster(response.data);
+
+      const monsterType = levelData.monsterData[roundCounter]?.monsterType;
+      const isBossMonster = monsterType === "BOSS";
+
+      console.log("Next Monster Data:", monsterType);
+      console.log("Is Boss?", isBossMonster);
+      console.log("Current Monster", response.data);
+
+      setIsBoss(isBossMonster);
+
+      if (bossCounter === 0) {
+        if (!isBossMonster) {
+          setRoundCounter((prev) => prev + 1);
+          console.log("Boss Counter:", bossCounter);
+        } else {
+          setRoundCounter((prev) => prev + 1);
+          setBossCounter((prev) => prev + 1);
+          console.log("Boss Counter:", bossCounter);
+        }
+      } else if (bossCounter > 0 && bossCounter < 3) {
+        setBossCounter((prev) => prev + 1);
+        console.log("Boss Counter:", bossCounter);
+        setIsBoss(true);
+        console.log("is boss?", isBoss);
+      } else {
+        setBossCounter(0);
+        setRoundCounter((prev) => prev + 1);
+        console.log("Boss Counter:", bossCounter);
+      }
+    } catch (error) {
+      console.error("Failed to fetch monster:", error);
+    }
+  };
+
+
+
+  useEffect(() => {
+    const {
+      levelId,
+      userId,
+      isCurrentLevelCompleted
+    } = location.state || {};
+
+    if (!levelId) {
+      console.error('No level ID provided in navigation state. Redirecting.');
+      navigate('/homepage');
+      return;
+    }
+    const fetchGameInfo = async () => {
+      try {
+        console.log("Completed?: " + isCurrentLevelCompleted);
+
+        const lvl = await API.get(`/levels/${levelId}`);
+        console.log("LEVEL: ", lvl.data);
+        // 2. Use the guaranteed boolean value for calculating rewards
+        const coinsReward = isCurrentLevelCompleted ? 0 : lvl.data.coinsReward;
+        const gemsReward = isCurrentLevelCompleted ? 0 : lvl.data.gemsReward;
+        const monsterData = lvl.data.levelMonsters;
+
+        setLevelData({
+          coinsReward,
+          gemsReward,
+          monsterData
+        });
+
+        const equipResp = await API.get(`/users/${userId}/equipped-cosmetic`);
+        // API shape: { equippedCosmetic: { cosmeticId, name, rarity, cosmeticImage } }
+        setItemEquipped(equipResp.data?.equippedCosmetic || {});
+        console.log("Equipped Item:", equipResp.data);
+
+        const userResp = await API.get(`/users/${userId}`);
+        setUserDetails(userResp.data);
+        console.log("Potion Info: ", userResp.data.potions);
+        setPotions(userResp.data.potions);
+        const gameInfo = await API.post(`/game/start`, { levelId, userId });
+        setHp(gameInfo.data.lives);
+        console.log("Game Monsters:", gameInfo.data.monsters);
+        const monster = await API.get(`/game/current-monster`);
+        setCurrentMonster(monster.data);
+        console.log("Monster Info: ", monster.data);
+        setRoundCounter(1);
+
+        // --- INITIAL Potion State Reset ---
+        setPotionUsedThisRound(false);
+        setSkipPotionUsed(false);
+        // ----------------------------------
+        
+        // --- FIX: Ensure initial hint is spoken on first load ---
+        setInitialHintSpoken(false);
+        // -------------------------------------------------------
+
+        //Boss Check
+        if (lvl.data.levelMonsters[0].monsterType === "BOSS") {
+          setIsBoss(true);
+        }
+        else {
+          setIsBoss(false);
+        }
+        console.log("Is Boss?", isBoss);
+        setSrc(BGM_DungeonBattle);
+
+      } catch (error) {
+        console.error('Error starting game:', error);
+      }
+    };
+    fetchGameInfo();
+  }, [location.state, navigate]);
+
+
+  // --- SFX and BGM Hook Integration ---
+  const {
+    setSrc,
+    setActivityMode,
+    playLaserSuccess,
+    playLaserFail,
+    playHeal,
+    playShield,
+    playSkip,
+    playHit,
+    playEnemyAttack,
+    playEnemyDead,
+    playConfirm,
+    playDenied,
+    playCancel,
+    playPotionClick,
+    playDungeonClick,
+    playLevelClear,
+    playDungeonFailed,
+  } = useContext(MusicContext);
+
+
+
+
+  // Handle selection from bottom bar
+  const handleTileClick = (letter, index) => {
+    playDungeonClick();
+    if (!selectedTiles.find((t) => t.index === index)) {
+      // user-picked tiles are not preselected
+      setSelectedTiles((prev) => [...prev, { label: letter, index, preselected: false }]);
+    }
+  };
+
+  // Handle removal from selected area
+  const handleSelectedTileClick = (tileToRemove) => {
+    // Prevent removing preselected (hint) tiles
+    if (tileToRemove.preselected) {
+      playDenied?.(); // optional feedback if you want a denied sound
+      return;
+    }
+    playDungeonClick(); // <-- SFX: Tile deselection sound
+    setSelectedTiles((prev) => prev.filter((tile) => tile.index !== tileToRemove.index));
+  };
+
+
+  // --- SFX Integration in Core Game Logic ---
+  const handleSubmitAnswer = async () => {
+    const guessedName = selectedTiles.map(tile => tile.label).join('');
+
+    try {
+      const userAnswer = await API.post(`/game/guess`, { guessedName });
+      console.log('Answer response:', userAnswer.data);
+      setSelectedTiles([]);
+
+      if (skipPotionUsed) {
+        setSkipPotionUsed(true);
+        setPotionUsedThisRound(true);
+        setMistakeCounter(0);
+        // displayedMistakeCounter remains until round finishes
+      }
+      setCanCastAgain(false);
+
+      if (!userAnswer.data.correct) {
+        // Wrong answer -> play fail laser
+        setLaserEffect("fail");
+        playLaserFail(); // <-- SFX: Laser Fail
+        setMistakeCounter((prev) => prev + 1);
+        setPotionUsedThisRound(false);
+
+        // Enemy counterattack sequence
+        setTimeout(() => {
+          setLaserEffect(null);
+          setEnemyAttacking(true);
+          playEnemyAttack(); // <-- SFX: Enemy Attack initiated
+
+          // Show impact or consume shield after enemy reaches player (mga 0.8s)
+          setTimeout(() => {
+            if (shieldActive) {
+              setShieldActive(false);
+              playShield(); // <-- SFX: Shield absorption/break
+            } else {
+              // No shield active then take damage animation
+              setImpactVisible(true);
+              setHp(userAnswer.data.lives);
+              playHit(); // <-- SFX: Player hit
+              setTimeout(() => setImpactVisible(false), 500);
+              if (userAnswer.data.gameOver) {
+                setIsGameOver(true);
+                playDungeonFailed();
+                setSrc();
+                setMakeMessageAppear(true);
+                setMessageDetails({
+                  mainMessage: 'Level Failed',
+                  subMessage: 'Hint:'
+                });
+              }
+            }
+          }, 800);
+
+          // Return enemy back
+          setTimeout(() => {
+            setEnemyAttacking(false);
+          }, 2000);
+          // End of round: enable casting again AND update displayed hint counter
+          setTimeout(() => {
+            setCanCastAgain(true);
+            setDisplayedMistakeCounter(prev => prev + 1); // update hint now that round finished
+            setPotionUsedThisRound(false); // Reset potion usage after each turn
+          }, 3000);
+        }, 2500);
+      }
+
+      else {
+        // Correct answer -> play success laser
+        setLaserEffect("success");
+        playLaserSuccess(); // <-- SFX: Laser Success
+        setMistakeCounter(0);
+        setTimeout(() => {
+          if (userAnswer.data.gameOver) {
+            setEnemyDefeated(true);
+            playEnemyDead();
+            setIsGameOver(true);
+            playLevelClear();
+            setSrc();
+            setMakeMessageAppear(true);
+            setMessageDetails({
+              mainMessage: 'Level Cleared',
+              subMessage: `Rewards: `
+            });
+            setLaserEffect(null);
+          } else {
+            // Trigger enemy stagger and fade sequence
+            setEnemyDefeated(true);
+            playEnemyDead();
+
+            // load next monster
+            setTimeout(() => {
+              setEnemyDefeated(false);
+              getMonster();
+              setCanCastAgain(true);
+              // reset displayed hint because round fully finished successfully
+              setDisplayedMistakeCounter(0);
+              setPotionUsedThisRound(false); // Reset potion usage after each turn
+              setSkipPotionUsed(false); // Reset skip potion usage for the new round
+            }, 1200);
+
+            setLaserEffect(null);
+          }
+        }, 1200);
+      }
+
+    } catch (error) {
+      console.error("Error submitting answer:", error);
+    }
+  };
+
+
+  // --- SFX Integration in Potion Logic ---
+  const healthPotions = potions.HEALTH ?? 0;
+  const shieldPotions = potions.SHIELD ?? 0;
+  const skipPotions = potions.SKIP ?? 0;
+
+  function confirmPotion(potionType) {
+    let message = {};
+    let isAvailable = true;
+    let potionCount = 0;
+
+    if (potionType === 'HEALTH') potionCount = healthPotions;
+    else if (potionType === 'SHIELD') potionCount = shieldPotions;
+    else if (potionType === 'SKIP') potionCount = skipPotions;
+
+    // 1. Check potion stock
+    if (potionCount <= 0) {
+      playDenied(); // <-- SFX: Denied
+      message = {
+        mainMessage: 'Out of Potions!',
+        subMessage: `You do not have any ${potionType} Potions.`
+      };
+      isAvailable = false;
+    }
+
+    // 2. Check one-per-turn limit (only if not out of potions)
+    if (isAvailable && potionUsedThisRound) {
+      playDenied(); // <-- SFX: Denied
+      message = {
+        mainMessage: 'Limit Reached!',
+        subMessage: 'You can only use one potion per turn.'
+      };
+      isAvailable = false;
+    }
+
+    // 3. Check Skip Potion rule (must attack after skipping)
+    if (isAvailable && skipPotionUsed && potionType !== 'SKIP') {
+      playDenied(); // <-- SFX: Denied
+      message = {
+        mainMessage: 'Action Required!',
+        subMessage: 'You must attack before you can drink a potion again.'
+      };
+      isAvailable = false;
+    }
+
+    // 4. Check Skip Potion can only be used once per round (Redundant check if skipPotionUsed state is handled on round reset, but kept for clarity)
+    if (isAvailable && skipPotionUsed && potionType === 'SKIP') {
+      playDenied();
+      message = {
+        mainMessage: 'Limit Reached!',
+        subMessage: 'You can only use 1 Skip Potion per Round.'
+      };
+      isAvailable = false;
+    }
+
+    setMakeMessageAppear(true);
+
+    if (!isAvailable) {
+      setMessageDetails({ ...message, showCloseButton: true });
+      setCurrentPotion(null);
+      return;
+    }
+
+    // If all checks pass, set up the confirmation message
+    playPotionClick();
+
+    if (potionType === 'HEALTH') {
+      message = {
+        mainMessage: 'Drink Health Potion?',
+        subMessage: 'This will increase your lifepoints by 1'
+      };
+    } else if (potionType === 'SHIELD') {
+      message = {
+        mainMessage: 'Use Shield Potion?',
+        subMessage: 'This will protect you from the next attack'
+      };
+    } else if (potionType === 'SKIP') {
+      message = {
+        mainMessage: 'Use Skip Potion?',
+        subMessage: 'This will skip the current monster.\nCan only be used once'
+      };
+    }
+
+    setMessageDetails(message);
+    setCurrentPotion(potionType);
+  }
+
+  //Function to use potion
+  const usePotion = async (potionType) => {
+    try {
+      const resp = await API.post(`/game/use-potion`, {
+        userId: userDetails.userId,
+        potionType
+      });
+      console.log('Potion used:', resp.data);
+
+      setHp(resp.data.updatedLives);
+      setMakeMessageAppear(false);
+
+      setPotionUsedThisRound(true);
+
+      if (potionType === 'HEALTH') {
+        playHeal(); // <-- SFX: Heal
+      }
+      if (potionType === 'SHIELD') {
+        playShield(); // <-- SFX: Shield
+        setShieldActive(true);
+      }
+      if (potionType === 'SKIP') {
+        playSkip(); // <-- SFX: Skip
+        getMonster();
+        setSkipPotionUsed(true);
+        setPotionUsedThisRound(false);
+        setDisplayedMistakeCounter(0); // Reset hint counter on skip
+      }
+
+      const userResp = await API.get(`/users/${userDetails.userId}`);
+      setPotions(userResp.data.potions);
+      setTimeout(() => {
+        if (resp.data.levelCleared === true) {
+          playEnemyDead(); // <-- SFX: Enemy Dead
+          setEnemyDefeated(true);
+          setBossCounter((prev) => prev + 1);
+          setIsGameOver(true);
+          playLevelClear();
+          setSrc(); // <-- BGM: Level Clear music
+          setMakeMessageAppear(true);
+          setMessageDetails({
+            mainMessage: 'Level Cleared',
+            subMessage: `Rewards: `
+          });
+        }
+        setCurrentPotion(null);
+      }, 1000);
+    } catch (err) {
+      console.error("Failed to use potion:", err);
+      playDenied();
+      setMakeMessageAppear(true);
+      setMessageDetails({
+        mainMessage: 'Error!',
+        subMessage: (skipPotionUsed && potionType == 'SKIP')?'You can only use 1 Skip Potion per Round':'Failed to use potion. Please try again.',
+        showCloseButton: true
+      });
+      setCurrentPotion(null);
+    }
+  };
+
+  const hints = [
+    'Read the Codex to learn about the monsters',
+    'Use your potions wisely',
+    'You buy potions in the shop'
+  ];
+  const [isGameOver, setIsGameOver] = useState(false);
+
+  //Uppercase letters
+  const uppercaseLetters = currentMonster.jumbledLetters?.map(l => l.toUpperCase()) || [];
+
+  const [currentPotion, setCurrentPotion] = useState();
+  const [showLaser, setShowLaser] = useState(false);
+
+  const [shieldActive, setShieldActive] = useState(false);
+  const [laserEffect, setLaserEffect] = useState(null);
+  const [enemyDefeated, setEnemyDefeated] = useState(false);
+  const [isBoss, setIsBoss] = useState(false);
+  const [bossCounter, setBossCounter] = useState(0);
+
+  //COUNTER FOR RESETTING LASER
+  const [laserKey, setLaserKey] = useState(0);
+  const [canCastAgain, setCanCastAgain] = useState(true);
+
+  useEffect(() => {
+    if (laserEffect) setLaserKey(prev => prev + 1);
+  }, [laserEffect]);
+
+
+  return (
+    <Grid
+      container
+      direction="row"
+      alignItems="center"
+      sx={{
+        backgroundImage: isBoss?`linear-gradient(to left, rgba(255, 0, 0, 0.10), rgba(255, 0, 0, 0)),url(${DungeonRoomAnimation})`
+        :`url(${DungeonRoomAnimation})`,
+        backgroundSize: 'cover',
+        backgroundPosition: 'center',
+        width: '100vw',
+        height: '56.25vw',
+        maxHeight: '100vh',
+        maxWidth: '177.78vh',
+        margin: 'auto',
+        position: 'relative',
+        overflow: 'auto',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+    >
+      {/* Player Tab */}
+      {/* ... (Existing Player Tab JSX) ... */}
+      <Box sx={{
+        position: 'absolute', top: 16, left: 16,
+        backgroundImage: `url(${NameTabvar2})`,
+        backgroundSize: 'cover',
+        width: 700,
+        height: 150,
+        display: 'flex',
+        alignItems: 'center',
+        paddingLeft: 2
+      }}>
+        <img src={MCHeadshot} alt="Player" style={{ width: 100, height: 100, marginLeft: 10 }} />
+        <Stack direction={'column'} sx={{ width: 250 }}>
+          <Typography variant="h2" color="#5D4037" sx={{ fontWeight: 'bold', fontFamily: 'RetroGaming', paddingLeft: 5 }}>
+            {userDetails.firstName || 'Player Name'}
+          </Typography>
+          {/* <Typography variant="h6" color="#5D4037" sx={{ fontWeight: 'bold', fontFamily: 'RetroGaming', paddingLeft: 5 }}>
+            Rank: Mage
+          </Typography>
+          */}
+        </Stack>
+        {[0, 1, 2, 3].map(i => (
+          <Box
+            key={i}
+            sx={{
+              width: 48, height: 43,
+              //border: '2px solid red',
+              backgroundImage: `url(${shieldActive
+                ? (hp > i ? HeartShield : HeartNotFilled)
+                : (hp > i ? HeartFilled : HeartNotFilled)
+                })`,
+              backgroundSize: 'cover',
+              marginLeft: i === 0 ? 7 : 2
+            }}
+          />
+        ))}
+      </Box>
+
+      {/* Round Counter */}
+      {/* ... (Existing Round Counter JSX) ... */}
+      <Stack
+        direction="column"
+        spacing={1}
+        sx={{
+          position: 'absolute',
+          top: 16,
+          alignItems: 'center'
+        }}
+      >
+        <Typography variant="h2"
+          color={isBoss ? "#d07070" : "#5D4037"}
+          sx={{ fontWeight: 'bold', fontFamily: 'RetroGaming', WebkitTextStroke: '2px #180f0c', }}>
+          Round
+        </Typography>
+        <Typography variant="h2"
+          color={isBoss ? "#d07070" : "#5D4037"}
+          sx={{ fontWeight: 'bold', fontFamily: 'RetroGaming', WebkitTextStroke: '2px #180f0c' }}>
+          {isBoss ? "Boss" : roundCounter}
+        </Typography>
+      </Stack>
+
+      {/* Enemy Tab */}
+      {/* ... (Existing Enemy Tab JSX) ... */}
+      <Box
+        sx={{
+          position: 'absolute',
+          top: 16,
+          right: 16,
+          backgroundImage: `url(${NameTabvar2})`,
+          backgroundSize: 'cover',
+          width: 700,
+          height: 150,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'flex-end',
+          pr: 2,
+        }}
+      >
+        {
+          isBoss &&
+          [0, 1, 2].map(i => (
+            <Box
+              key={i}
+              sx={{
+                width: 48, height: 43,
+                //border: '2px solid red',
+                backgroundImage: `url(${(bossCounter <= i + 1 ? HeartFilled : HeartNotFilled)
+                  })`,
+                backgroundSize: 'cover',
+                marginLeft: i === 0 ? 10 : 2
+              }}
+            />
+          ))}
+
+        <Box sx={{
+          //border: 'solid',
+          width: 320,
+          height: 70,
+          justifyItems: 'center',
+          alignContent: 'center'
+        }}>
+          <Typography
+            variant="h2"
+            color="#5D4037"
+            sx={{
+              fontWeight: 'bold',
+              fontFamily: 'RetroGaming',
+            }}
+          >
+            {currentMonster.englishName}
+          </Typography>
+        </Box>
+
+
+
+        <Box
+          component="img"
+          src={`data:image/png;base64,${currentMonster.imageData}`}
+          alt="Enemy"
+          sx={{ width: 120, height: 110, marginRight: 2 }}
+        />
+      </Box>
+
+
+      {/* Cast Button */}
+      <Button
+        sx={{
+          backgroundImage: `url(${CastButton})`,
+          backgroundSize: 'cover',
+          width: '220px',
+          height: '80px',
+          position: 'absolute',
+          top: '20%',
+          color: '#5D4037',
+          visibility: selectedTiles.length > 0 ? 'visible' : 'hidden',
+          opacity: canCastAgain ? 1 : 0.5, // fade when disabled
+        }}
+        onClick={handleSubmitAnswer}
+        disabled={!canCastAgain} // disable during enemy attack
+      />
+
+      {/* Selected Tiles */}
+      {/* ... (Existing Selected Tiles JSX) ... */}
+      <Box sx={{
+        width: 600, height: 100,
+        //border: '2px solid red',  
+        top: '30%', position: 'absolute', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 2, zIndex: 1000
+      }}>
+        {selectedTiles.map((tile) => (
+          <Button
+            key={tile.index}
+            onClick={() => handleSelectedTileClick(tile)}
+            // make hint-driven tiles unclickable
+            disabled={tile.preselected}
+            sx={{
+              backgroundImage: `url(${ItemBox})`,
+              backgroundSize: 'cover',
+              width: 60,
+              height: 60,
+              textTransform: 'none',
+              color: '#5D4037',
+              fontWeight: 'bold',
+              fontFamily: 'RetroGaming',
+              fontSize: 24,
+              '&:hover': { cursor: tile.preselected ? 'default' : 'pointer' },
+              // yellow glow for preselected (hint) tiles
+              boxShadow: tile.preselected ? '0 0 16px 6px rgba(255,235,59,0.85)' : undefined,
+              border: tile.preselected ? '1px solid rgba(255,215,64,0.6)' : undefined,
+            }}
+          >
+            {tile.label}
+          </Button>
+        ))}
+      </Box>
+
+      {/* Characters */}
+      <Box
+        sx={{
+          width: 1000,
+          height: 400,
+          top: "3%",
+          position: "relative",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 2,
+        }}
+      >
+        <Stack direction="row" sx={{ width: "100%" }}>
+          {/* Main Character */}
+          <motion.div
+            key={`mc-${roundCounter}`}
+            initial={{ x: "-200%" }}
+            // --- MODIFIED ANIMATE PROP ---
+            animate={
+              isGameOver // Check for Game Over first (highest priority)
+                ? {
+                  x: -1500, // Retreat far to the left
+                  opacity: 0,
+                }
+                : impactVisible // Otherwise, check for impact shake
+                  ? {
+                    x: [0, -15, 15, -10, 10, -5, 5, 0], // shake sequence
+                  }
+                  : {
+                    x: 0, // Default state (idle)
+                    opacity: 1,
+                  }
+            }
+            transition={{
+              // Longer duration for the smooth retreat, shorter for the shake
+              duration: isGameOver ? 1.5 : impactVisible ? 0.6 : 0.8,
+              ease: isGameOver ? "easeIn" : "easeInOut", // Use easeIn for a smooth exit
+            }}
+            style={{
+              position: "absolute",
+              bottom: 0,
+              left: 0,
+              width: "220px",
+              height: "215px",
+            }}
+          >
+
+            <Box sx={{ position: "relative", width: "100%", height: "100%" }}>
+              <img
+                src={MCNoWeaponArm}
+                alt="Player"
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  width: '220px',
+                  height: '215px',
+                  zIndex: 3
+                }}
+              />
+              <img
+                src={MCNoWeaponAnimated}
+                alt="Player"
+                style={{
+                  position: "absolute", top: 0, left: 0, width: "220px", height: "215px",
+                  zIndex: 1
+                }}
+              />
+              {itemEquipped?.cosmeticImage ? (
+                <img
+                  src={`data:image/png;base64,${itemEquipped.cosmeticImage}`}
+                  alt="Weapon"
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '220px',
+                    height: '215px',
+                    zIndex: 2
+                  }}
+                />
+              ) : null}
+              {shieldActive && (
+                <img
+                  src={Shield}
+                  alt="Shield"
+                  style={{ position: "absolute", top: 0, left: 0, width: "220px", height: "215px",zIndex: 4 }}
+                />
+              )}
+
+            </Box>
+            {impactVisible && (
+              <img
+                src={MCNoWeaponHit}
+                alt="Player"
+                style={{ position: "absolute", top: 0, left: 0, width: "220px", height: "215px" }}
+              />
+            )}
+
+          </motion.div>
+
+          <motion.div
+            key={`enemy-${roundCounter}`}
+            initial={{ x: "100%", opacity: 0 }}
+            animate={
+              enemyDefeated
+                ? { x: [0, -15, 15, -10, 10, -5, 5, 0], opacity: 0 }
+                : { x: enemyAttacking ? "-600px" : 0, opacity: 1 }
+            }
+            transition={{ duration: enemyDefeated ? 1.2 : 0.8, ease: "easeInOut" }}
+            style={{
+              position: "absolute",
+              bottom: 0,
+              right: 0,
+              width: "220px",
+              height: "215px",
+            }}
+          >
+            {/* Aura Behind */}
+            {isBoss && (
+              <img
+                src={BossAura}
+                alt="Aura Enemy"
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                  width: "220px",
+                  height: "215px",
+                  zIndex: 0,
+                }}
+              />
+            )}
+
+            {/* Main Enemy */}
+            <img
+              src={`data:image/png;base64,${currentMonster.imageData}`}
+              alt="Enemy"
+              style={{ width: "220px", height: "215px", position: "relative", zIndex: 1 }}
+            />
+
+            {/* Shield overlay */}
+            {laserEffect === "fail" && (
+              <img
+                src={ShieldEnemy}
+                alt="Shield Enemy"
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                  width: "220px",
+                  height: "215px",
+                  zIndex: 2,
+                }}
+              />
+            )}
+          </motion.div>
+
+
+
+
+          {/* Laser Effect */}
+          <Box
+            sx={{
+              width: 700,
+              height: 100,
+              position: "relative",
+              display: laserEffect ? "flex" : "none",
+              alignItems: "center",
+              justifyContent: "center",
+              zIndex: 1000,
+              mt: 10,
+              ml: 25,
+            }}
+          >
+            {laserEffect === "success" && (
+              <img
+                key={laserKey}
+                src={LaserSuccess}
+                alt="Laser Success"
+                style={{ width: "100%", height: "100%" }}
+              />
+            )}
+            {laserEffect === "fail" && (
+              <img
+                key={laserKey}
+                src={LaserFail}
+                alt="Laser Fail"
+                style={{ width: "100%", height: "100%" }}
+              />
+            )}
+          </Box>
+
+        </Stack>
+      </Box>
+
+
+      {/* Message Box */}
+      {makeMessageAppear && (
+        <Box sx={{
+          position: 'absolute',
+          backgroundImage: `url(${GameTextBoxMediumLong})`,
+          backgroundSize: 'cover',
+          width: '51%',
+          height: '36%',
+          top: '30%',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000
+        }}>
+          <Grid container direction="column" alignItems="center" sx={{ p: 4 }}>
+            <Stack direction="column" alignItems="center">
+              <Typography variant="h2" color="#5D4037" sx={{ fontWeight: 'bold', fontFamily: 'RetroGaming' }}>
+                {messageDetails.mainMessage}
+              </Typography>
+
+              <Typography variant="h5" color="#5D4037" sx={{ fontWeight: 'bold', fontFamily: 'RetroGaming', mt: 2,textAlign:'center',whiteSpace: 'pre-line', }}>
+                {messageDetails.subMessage}
+              </Typography>
+
+              {/* If game cleared, show rewards */}
+              {messageDetails.mainMessage === 'Level Cleared' && (
+                <Stack direction="row" spacing={4} mt={2}>
+                  <Typography variant="h6" color="#5D4037" sx={{ fontWeight: 'bold', fontFamily: 'RetroGaming' }}>
+                    <img src={GoldCoins} alt="Coin" style={{ width: '20px', height: '20px', marginRight: '8px', verticalAlign: 'middle' }} />
+                    {(levelData.coinsReward ?? 0)} Coins
+                  </Typography>
+                  <Typography variant="h6" color="#5D4037" sx={{ fontWeight: 'bold', fontFamily: 'RetroGaming' }}>
+                    <img src={Gems} alt="Gems" style={{ width: '20px', height: '30px', marginRight: '8px', verticalAlign: 'middle' }} />
+                    {(levelData.gemsReward ?? 0)} Gems
+                  </Typography>
+                </Stack>
+              )}
+
+              {/* If failed, show hint */}
+              {isGameOver && messageDetails.mainMessage === 'Level Failed' && (
+                <Typography variant="h6" color="#5D4037" sx={{ fontWeight: 'bold', fontFamily: 'RetroGaming', mt: 2 }}>
+                  {hints[Math.floor(Math.random() * hints.length)]}
+                </Typography>
+              )}
+            </Stack>
+
+
+            {/* Show potion confirm/cancel OR Close button for error */}
+            {currentPotion ? (
+              <Stack direction='row' spacing={2}>
+                <Button
+                  sx={{
+                    backgroundImage: `url(${GameShopBoxSmall})`,
+                    backgroundSize: 'cover',
+                    width: '210px',
+                    height: '60px',
+                    top: 20,
+                    color: '#5D4037'
+                  }}
+                  onClick={() => usePotion(currentPotion)}
+                >
+                  <Typography sx={{ fontFamily: 'RetroGaming' }}>Confirm</Typography>
+                </Button>
+                <Button
+                  sx={{
+                    backgroundImage: `url(${GameShopBoxSmallRed})`,
+                    backgroundSize: 'cover',
+                    width: '210px',
+                    height: '60px',
+                    top: 20,
+                    color: '#5D4037'
+                  }}
+                  onClick={() => {
+                    playCancel(); // <-- SFX: Cancel
+                    setCurrentPotion(null);
+                    setMakeMessageAppear(false);
+                  }}
+                >
+                  <Typography >Cancel</Typography>
+                </Button>
+              </Stack>
+            ) : (
+              // Only show Close button for error/limit messages 
+              messageDetails.showCloseButton && (
+                <Button
+                  sx={{
+                    backgroundImage: `url(${GameShopBoxSmall})`,
+                    backgroundSize: 'cover',
+                    width: '210px',
+                    height: '60px',
+                    top: 20,
+                    color: '#5D4037',
+                    mt: 2
+                  }}
+                  onClick={() => {
+                    playCancel(); // <-- SFX: Cancel
+                    setMakeMessageAppear(false);
+                    setMessageDetails({}); // Clear message details
+                  }}
+                >
+                  <Typography sx={{ fontFamily: 'RetroGaming' }}>Close</Typography>
+                </Button>
+              )
+            )}
+
+
+            {/* Show return to town if game over */}
+            {(isGameOver) && (
+              <Button
+                sx={{
+                  backgroundImage: `url(${GameShopBoxSmall})`,
+                  backgroundSize: 'cover',
+                  width: '210px',
+                  height: '60px',
+                  top: 20,
+                  color: '#5D4037',
+                  mt: 2
+                }}
+                onClick={() => {
+                  playConfirm();
+                  navigate('/homepage');
+                }}
+              >
+                <Typography sx={{ fontFamily: 'RetroGaming' }}>Return to Town</Typography>
+              </Button>
+            )}
+          </Grid>
+        </Box>
+      )}
+
+
+      <Box
+        sx={{
+          position: 'absolute',
+          backgroundImage: `url(${DungeonBarv2})`,
+          backgroundSize: 'cover',
+          backgroundPosition: 'center',
+          width: '100%',
+          height: '220px',
+          bottom: 0,
+          alignItems: 'center',
+          justifyContent: 'center',
+          display: 'flex',
+          flexDirection: 'column',
+        }}>
+        <Stack
+          direction="row"
+          alignItems="center"
+          justifyContent="space-between"
+          spacing={1} // adds equal space between sections
+          sx={{ mr: 1.5 }}
+        >
+          {/* Potions */}
+          <Stack direction="row" spacing={1} alignItems="center">
+            {[
+              { img: HealthPotion, label: "Health Potion", potionType: "HEALTH", count: healthPotions },
+              { img: ShieldPotion, label: "Shield Potion", potionType: "SHIELD", count: shieldPotions },
+              { img: SkipPotion, label: "Skip Potion", potionType: "SKIP", count: skipPotions }
+            ].map((potion, idx) => (
+              <Stack key={idx} direction="column" spacing={1} alignItems="center">
+                <Button
+                  sx={{
+                    backgroundImage: `url(${ItemBox})`,
+                    backgroundSize: 'cover',
+                    backgroundPosition: 'center',
+                    width: 100,
+                    height: 100,
+                    textTransform: 'none',
+                    color: '#5D4037',
+                    fontWeight: 'bold',
+                    fontFamily: 'RetroGaming',
+                    opacity: potion.count > 0 ? 1 : 0.5, // Visual cue for empty
+                    pointerEvents: isGameOver ? 'none' : 'auto', // Disable clicking if game over
+                    '&:hover': { opacity: 0.8, cursor: 'pointer' }
+                  }}
+                  onClick={() => confirmPotion(potion.potionType)}
+                >
+                  <img src={potion.img} alt={potion.label} style={{ width: '40px', height: '50px' }} />
+                </Button>
+                <Typography
+                  variant="caption"
+                  align="center"
+                  sx={{ color: '#5D4037', fontWeight: 'bold', fontFamily: 'RetroGaming' }}
+                >
+                  {potion.label} ({potion.count})
+                </Typography>
+              </Stack>
+            ))}
+          </Stack>
+
+          {/* Letter Tiles */}
+          <Stack direction="column" spacing={1} alignItems="center" sx={{ width: 900, height: 140 }}>
+            {[0, 1].map((row) => (
+              <Stack key={row} direction="row" spacing={1}>
+                {uppercaseLetters &&
+                  uppercaseLetters.slice(row * 7, (row + 1) * 7).map((letter, idx) => {
+                    const globalIndex = row * 7 + idx; // unique index per tile
+                    const isSelected = selectedTiles.some((t) => t.index === globalIndex);
+                    return (
+                      <Button
+                        key={globalIndex}
+                        onClick={() => handleTileClick(letter, globalIndex)}
+                        disabled={isSelected}
+                        sx={{
+                          visibility: isSelected ? 'hidden' : 'visible',
+                          backgroundImage: `url(${ItemBox})`,
+                          backgroundSize: 'cover',
+                          backgroundPosition: 'center',
+                          width: 60,
+                          height: 60,
+                          textTransform: 'none',
+                          color: '#5D4037',
+                          fontWeight: 'bold',
+                          fontFamily: 'RetroGaming',
+                          fontSize: 24,
+                          opacity: 1, '&:hover': { opacity: 0.8, cursor: 'pointer' }
+                        }}
+                      >
+
+                        {letter}
+                      </Button>
+
+                    );
+                  })}
+              </Stack>
+            ))} 
+          </Stack>
+          {/* Hint Box */}
+          <Box
+            sx={{
+              backgroundImage: `url(${DungeonHint})`,
+              backgroundSize: 'cover',
+              backgroundRepeat: 'no-repeat',
+              width: 350,
+              height: 150,
+              position: 'relative',
+
+            }}
+          >
+            {displayedMistakeCounter === 0 ? (
+              <Typography sx={{ padding: 2, textAlign:'center', mt: 1 }}>
+                I think that's {currentMonster.description} ...
+              </Typography>
+            ) : (() => {
+              const { revealed, fully, fullName } = getPartialTagalogName();
+              if (fully) {
+                return (
+                  <Typography sx={{ padding: 2, textAlign:'center', mt: 1 }}>
+                    Oh I remember now! that's {fullName}.
+                  </Typography>
+                );
+              }
+              return (
+                <Typography sx={{ padding: 2, textAlign:'center', mt: 1 }}>
+                  I think that monster's name is {revealed || '???'}...
+                </Typography>
+              );
+            })()}
+            <img
+              src={PixieFly}
+              alt="Pixie"
+              style={{
+                width: '70px',
+                height: '70px',
+                position: 'absolute',
+                bottom: 8,
+                right: 8,
+              }}
+            />
+          </Box>
+
+        </Stack>
+      </Box>
+    </Grid>
+  );
+}
