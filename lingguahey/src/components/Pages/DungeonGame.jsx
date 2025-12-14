@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useContext } from 'react';
 import { motion } from "framer-motion";
 
-import axios from 'axios';
+import axios from 'axios'; // Import Axios for TTS
 import {
   Box,
   Typography,
@@ -74,10 +74,38 @@ export default function DungeonGame() {
   // displayedMistakeCounter controls when the hint updates (only after the round finishes)
   const [displayedMistakeCounter, setDisplayedMistakeCounter] = useState(0);
   
-  // --- NEW Potion State ---
+  // --- NEW STATE FOR TTS CONTROL ---
+  const [initialHintSpoken, setInitialHintSpoken] = useState(false); 
+  // ---------------------------------
+  
+  // --- Potion State ---
   const [potionUsedThisRound, setPotionUsedThisRound] = useState(false);
   const [skipPotionUsed, setSkipPotionUsed] = useState(false);
-  // ------------------------
+  // --------------------
+
+  // --- TTS API Client Setup ---
+  const token = localStorage.getItem('token');
+  const APItts = axios.create({
+    baseURL: `${import.meta.env.VITE_API_BASE_URL}/api/lingguahey/tts`,
+    timeout: 5000,
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/octet-stream',
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  // --- TTS Synthesis Function ---
+  const synthesizeSpeech = async (text) => {
+    try {
+      const response = await APItts.post('/synthesize', { text }, { responseType: 'blob' });
+      const url = URL.createObjectURL(response.data);
+      new Audio(url).play();
+    } catch (error) {
+      console.error('Failed to synthesize speech', error);
+    }
+  };
+
 
   // helper: reveal tagalog name progressively based on mistakes
   function getPartialTagalogName() {
@@ -94,6 +122,50 @@ export default function DungeonGame() {
     const fully = revealLen >= name.length;
     return { revealed, fully, fullName: name };
   }
+
+  // --- MODIFIED EFFECT FOR TRIGGERING TTS DIALOGUE ---
+  useEffect(() => {
+    // 1. Guard against running if no monster is loaded
+    if (!currentMonster.englishName) return; 
+    
+    // 2. Determine hint text
+    let hintText = '';
+    const { revealed, fully, fullName } = getPartialTagalogName();
+
+    if (displayedMistakeCounter === 0) {
+      // Logic for initial hint
+      // Prevent running if the initial hint has already been spoken for this monster
+      if (initialHintSpoken) return; 
+      
+      hintText = `I think that's ${currentMonster.description} ...`;
+      
+    } else {
+      // Logic for subsequent (mistake) hints
+      // If we reach a mistake, ensure the initial flag is set to true 
+      // so we don't accidentally play the initial message later.
+      setInitialHintSpoken(true); 
+      if (fully) {
+        hintText = `Oh I remember now! that's ${fullName}.`;
+      } else {
+        const hiddenPartLength = fullName.length - revealed.length;
+        const obscuredName = revealed + ' '.repeat(hiddenPartLength > 0 ? hiddenPartLength : 0);
+        hintText = `I think that monster's name is ${obscuredName}...`;
+      }
+    }
+
+    // 3. Play TTS and set flag for initial message
+    if (hintText) {
+      synthesizeSpeech(hintText);
+      if (displayedMistakeCounter === 0) {
+        setInitialHintSpoken(true); // Set flag immediately after speaking initial hint
+      }
+    }
+
+  // The TTS is triggered every time the displayed hint counter changes, 
+  // or the current monster's identifying properties change.
+  }, [displayedMistakeCounter, currentMonster.englishName, currentMonster.description]);
+// ---------------------------------------------
+
 
   useEffect(() => {
     // 1. Get the current hint string (e.g., "AHA" from "AHAS")
@@ -129,36 +201,13 @@ export default function DungeonGame() {
     setSelectedTiles(newSelectedTiles);
   }, [displayedMistakeCounter, currentMonster]);
 
-  const hints = [
-    'Read the Codex to learn about the monsters',
-    'Use your potions wisely',
-    'You buy potions in the shop'
-  ];
-  const [isGameOver, setIsGameOver] = useState(false);
-
-  //Uppercase letters
-  const uppercaseLetters = currentMonster.jumbledLetters?.map(l => l.toUpperCase()) || [];
-
-  const [currentPotion, setCurrentPotion] = useState();
-  const [showLaser, setShowLaser] = useState(false);
-
-  const [shieldActive, setShieldActive] = useState(false);
-  const [laserEffect, setLaserEffect] = useState(null);
-  const [enemyDefeated, setEnemyDefeated] = useState(false);
-  const [isBoss, setIsBoss] = useState(false);
-  const [bossCounter, setBossCounter] = useState(0);
-
-  //COUNTER FOR RESETTING LASER
-  const [laserKey, setLaserKey] = useState(0);
-  const [canCastAgain, setCanCastAgain] = useState(true);
-
-  useEffect(() => {
-    if (laserEffect) setLaserKey(prev => prev + 1);
-  }, [laserEffect]);
 
 
   const getMonster = async () => {
     try {
+      // --- FIX: Reset TTS flag before fetching new monster ---
+      setInitialHintSpoken(false); 
+      // ------------------------------------------------------
       const response = await API.get(`/game/current-monster`);
       setCurrentMonster(response.data);
 
@@ -247,6 +296,10 @@ export default function DungeonGame() {
         setPotionUsedThisRound(false);
         setSkipPotionUsed(false);
         // ----------------------------------
+        
+        // --- FIX: Ensure initial hint is spoken on first load ---
+        setInitialHintSpoken(false);
+        // -------------------------------------------------------
 
         //Boss Check
         if (lvl.data.levelMonsters[0].monsterType === "BOSS") {
@@ -409,7 +462,7 @@ export default function DungeonGame() {
               // reset displayed hint because round fully finished successfully
               setDisplayedMistakeCounter(0);
               setPotionUsedThisRound(false); // Reset potion usage after each turn
-              setSkipPotionUsed(true);
+              setSkipPotionUsed(false); // Reset skip potion usage for the new round
             }, 1200);
 
             setLaserEffect(null);
@@ -467,7 +520,7 @@ export default function DungeonGame() {
       isAvailable = false;
     }
 
-    // 4. Check Skip Potion can only be used once per round
+    // 4. Check Skip Potion can only be used once per round (Redundant check if skipPotionUsed state is handled on round reset, but kept for clarity)
     if (isAvailable && skipPotionUsed && potionType === 'SKIP') {
       playDenied();
       message = {
@@ -535,6 +588,7 @@ export default function DungeonGame() {
         getMonster();
         setSkipPotionUsed(true);
         setPotionUsedThisRound(false);
+        setDisplayedMistakeCounter(0); // Reset hint counter on skip
       }
 
       const userResp = await API.get(`/users/${userDetails.userId}`);
@@ -567,6 +621,34 @@ export default function DungeonGame() {
       setCurrentPotion(null);
     }
   };
+
+  const hints = [
+    'Read the Codex to learn about the monsters',
+    'Use your potions wisely',
+    'You buy potions in the shop'
+  ];
+  const [isGameOver, setIsGameOver] = useState(false);
+
+  //Uppercase letters
+  const uppercaseLetters = currentMonster.jumbledLetters?.map(l => l.toUpperCase()) || [];
+
+  const [currentPotion, setCurrentPotion] = useState();
+  const [showLaser, setShowLaser] = useState(false);
+
+  const [shieldActive, setShieldActive] = useState(false);
+  const [laserEffect, setLaserEffect] = useState(null);
+  const [enemyDefeated, setEnemyDefeated] = useState(false);
+  const [isBoss, setIsBoss] = useState(false);
+  const [bossCounter, setBossCounter] = useState(0);
+
+  //COUNTER FOR RESETTING LASER
+  const [laserKey, setLaserKey] = useState(0);
+  const [canCastAgain, setCanCastAgain] = useState(true);
+
+  useEffect(() => {
+    if (laserEffect) setLaserKey(prev => prev + 1);
+  }, [laserEffect]);
+
 
   return (
     <Grid
